@@ -1,3 +1,5 @@
+from __future__ import print_function, division
+
 import math
 import numpy as np
 import soundfile as sf
@@ -42,7 +44,7 @@ class SignalFrames():
     :mono_mix: indicates that multi-channel signal should be mixed to mono
     (mean of all channels)
     """
-    def __init__(self, source, frame_size, hop_size, sample_rate=None,
+    def __init__(self, source, frame_size=4096, hop_size=2048, sample_rate=None,
         mono_mix=True):
         if type(source) == np.ndarray:
             signal = source
@@ -70,7 +72,7 @@ class SignalFrames():
         """
         if hop_size is None:
             hop_size = frame_size
-        frame_count = math.ceil(len(x) / hop_size)
+        frame_count = int(math.ceil(len(x) / hop_size))
         def pad(x, size, value=0):
             padding_size = size - len(x)
             if padding_size:
@@ -78,7 +80,7 @@ class SignalFrames():
             return x
         frames = np.vstack(
             pad(x[start:start + frame_size], frame_size) \
-            for start in range(0, hop_size * frame_count, hop_size))
+            for start in np.arange(0, hop_size * frame_count, hop_size))
         return frames
 
     def _to_mono(self, samples):
@@ -86,3 +88,28 @@ class SignalFrames():
             return samples
         else:
             return samples.mean(axis=-1)
+
+def mean_power(x_frames):
+    return np.sqrt(np.mean(x_frames**2, axis=-1))
+
+def power(x_frames):
+    return np.sqrt(np.sum(x_frames**2, axis=-1))
+
+def mean_energy(x_frames):
+    """
+    Example usage:
+
+    import matplotlib.pyplot as plt
+    import soundfile as sf
+    from analysis import read_frames
+
+    def analyze_mean_energy(file, frame_size=1024):
+        frames, t, fs = read_frames(x, frame_size)
+        y = mean_energy(frames)
+        plt.semilogy(t, y)
+        plt.ylim(0, 1)
+    """
+    return np.mean(x_frames**2, axis=-1)
+
+def energy(x_frames):
+    return np.sum(x_frames**2, axis=-1)

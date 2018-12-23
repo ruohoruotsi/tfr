@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='tfr',
-      version='0.1',
+      version='0.2.4',
       description='Time-frequency reassigned spectrograms',
       url='http://github.com/bzamecnik/tfr',
       author='Bohumir Zamecnik',
@@ -15,6 +15,8 @@ setup(name='tfr',
          'scipy',
          'soundfile',
       ],
+      setup_requires=['setuptools-markdown'],
+      long_description_markdown_filename='README.md',
       # See https://pypi.python.org/pypi?%3Aaction=list_classifiers
       classifiers=[
           # How mature is this project? Common values are
@@ -29,8 +31,14 @@ setup(name='tfr',
 
           'License :: OSI Approved :: MIT License',
 
+          'Programming Language :: Python :: 2',
           'Programming Language :: Python :: 3',
 
           'Operating System :: POSIX :: Linux',
           'Operating System :: MacOS :: MacOS X',
-      ])
+      ],
+      entry_points={
+          'console_scripts': [
+              'tfr = tfr.spectrogram_features:main'
+          ]
+      })

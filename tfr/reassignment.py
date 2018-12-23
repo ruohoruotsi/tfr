@@ -1,17 +1,61 @@
+from __future__ import print_function, division
+
+import math
 import os
+
 import numpy as np
 import scipy
 
 from .spectrogram import db_scale, positive_freq_magnitudes, \
-    select_positive_freq_fft, fftfreqs, normalized_window
-from .analysis import SignalFrames
+    select_positive_freq_fft, fftfreqs, normalized_window, scale_magnitudes
+from .signal import SignalFrames
 from .tuning import PitchQuantizer, Tuning
 from .plots import save_raw_spectrogram_bitmap
+
+
+class LinearTransform():
+    def __init__(self, positive_only=True):
+        # range of normalized frequencies
+        self.bin_range = (0, 0.5) if positive_only else (0, 1)
+
+    def transform_freqs(self, X_inst_freqs, sample_rate):
+        output_bin_count = X_inst_freqs.shape[1]
+        X_y = X_inst_freqs
+        return X_y, output_bin_count, self.bin_range
+
+
+class PitchTransform():
+    """
+    Perform the proper quantization to pitch bins according to possible
+    subdivision before the actual histogram computation. Still we need to
+    move the quantized pitch value a bit from the lower bin edge to ensure
+    proper floating point comparison. Note that the quantizer rounds values
+    from both sides towards the quantized value, while histogram2d floors the
+    values to the lower bin edge. The epsilon is there to prevent log of 0
+    in the pitch to frequency transformation.
+
+    bin_range: range of pitch bins (default: A0 27.5 Hz to E10 21096.16 Hz)
+    """
+    def __init__(self, bin_range=(-48, 67), bin_division=1, tuning=Tuning()):
+        self.tuning = tuning
+        self.bin_range = bin_range
+        self.bin_division = bin_division
+
+    def transform_freqs(self, X_inst_freqs, sample_rate):
+        quantization_border = 1 / (2 * self.bin_division)
+        pitch_quantizer = PitchQuantizer(self.tuning, bin_division=self.bin_division)
+        eps = np.finfo(np.float32).eps
+        # TODO: is it possible to quantize using relative freqs to avoid
+        # dependency on the fs parameter?
+        X_y = pitch_quantizer.quantize(np.maximum(sample_rate * X_inst_freqs, eps) + quantization_border)
+        output_bin_count = (self.bin_range[1] - self.bin_range[0]) * self.bin_division
+        return X_y, output_bin_count, self.bin_range
+
 
 class Spectrogram():
     """
     Represents spectrogram information of a time-domain signal which can be used
-    to compute various types of reassigned spectrograms, chromagrams, etc.
+    to compute various types of reassigned spectrograms, pitchgrams, etc.
     """
     def __init__(self, signal_frames, window=scipy.hanning, positive_only=True):
         """
@@ -63,8 +107,8 @@ class Spectrogram():
 
     def reassigned(
         self,
-        output_frame_size, transform,
-        reassign_time=True, reassign_frequency=True, to_log=True):
+        output_frame_size=None, transform=LinearTransform(),
+        reassign_time=True, reassign_frequency=True, magnitudes='power_db'):
         """
         Reassigned spectrogram requantized both in frequency and time.
 
@@ -73,6 +117,9 @@ class Spectrogram():
 
         transform - transforms the frequencies
         """
+
+        if output_frame_size is None:
+            output_frame_size = self.signal_frames.hop_size
 
         frame_size = self.signal_frames.frame_size
         fs = self.signal_frames.sample_rate
@@ -98,7 +145,8 @@ class Spectrogram():
             self.signal_frames.sample_rate)
         frame_duration = frame_size / fs
         end_input_time = self.signal_frames.duration
-        output_frame_count = (end_input_time * fs) // output_frame_size
+        output_frame_count = int(math.ceil((end_input_time * fs) / output_frame_size))
+        print('output_frame_count', output_frame_count)
         time_range = (0, output_frame_count * output_frame_size / fs)
 
         output_shape = (output_frame_count, output_bin_count)
@@ -108,50 +156,9 @@ class Spectrogram():
             range=(time_range, bin_range),
             bins=output_shape)
 
-        # power spectra
-        X_spectrogram = X_spectrogram ** 2
-        # dB scaling
-        if to_log:
-            X_spectrogram = db_scale(X_spectrogram)
+        X_spectrogram = scale_magnitudes(X_spectrogram, magnitudes)
 
         return X_spectrogram
-
-
-class LinearTransform():
-    def __init__(self, positive_only=True):
-        # range of normalized frequencies
-        self.bin_range = (0, 0.5) if positive_only else (0, 1)
-
-    def transform_freqs(self, X_inst_freqs, sample_rate):
-        output_bin_count = X_inst_freqs.shape[1]
-        X_y = X_inst_freqs
-        return X_y, output_bin_count, self.bin_range
-
-
-class ChromaTransform():
-    """
-    Perform the proper quantization to pitch bins according to possible
-    subdivision before the actual histogram computation. Still we need to
-    move the quantized pitch value a bit from the lower bin edge to ensure
-    proper floating point comparison. Note that the quantizer rounds values
-    from both sides towards the quantized value, while histogram2d floors the
-    values to the lower bin edge. The epsilon is there to prevent log of 0
-    in the pitch to frequency transformation.
-    """
-    def __init__(self, bin_range=(-48, 67), bin_division=1):
-        self.bin_range = bin_range
-        self.bin_division = bin_division
-
-    def transform_freqs(self, X_inst_freqs, sample_rate):
-        quantization_border = 1 / (2 * self.bin_division)
-        pitch_quantizer = PitchQuantizer(Tuning(), bin_division=self.bin_division)
-        eps = np.finfo(np.float32).eps
-        # TODO: is it possible to quantize using relative freqs to avoid
-        # dependency on the fs parameter?
-        X_y = pitch_quantizer.quantize(np.maximum(sample_rate * X_inst_freqs, eps) + quantization_border)
-        output_bin_count = (self.bin_range[1] - self.bin_range[0]) * self.bin_division
-        return X_y, output_bin_count, self.bin_range
-
 
 def cross_spectrum(spectrumA, spectrumB):
     """
@@ -245,33 +252,33 @@ def process_spectrogram(filename, frame_size, hop_size, output_frame_size):
         reassign_time=True, reassign_frequency=True)
     save_raw_spectrogram_bitmap(image_filename + '_reassigned_tf.png', X_reassigned_tf)
 
-    chroma_transform = ChromaTransform(bin_range=(-48, 67), bin_division=1)
+    pitch_transform = PitchTransform(bin_range=(-48, 67), bin_division=1)
 
-    # TF-reassigned chromagram
-    X_chromagram_tf = spectrogram.reassigned(output_frame_size,
-        chroma_transform,
+    # TF-reassigned pitchgram
+    X_pitchgram_tf = spectrogram.reassigned(output_frame_size,
+        pitch_transform,
         reassign_time=True, reassign_frequency=True)
-    save_raw_spectrogram_bitmap(image_filename + '_chromagram_tf.png', X_chromagram_tf)
+    save_raw_spectrogram_bitmap(image_filename + '_pitchgram_tf.png', X_pitchgram_tf)
 
-    # T-reassigned chromagram
-    X_chromagram_t = spectrogram.reassigned(output_frame_size,
-        chroma_transform,
+    # T-reassigned pitchgram
+    X_pitchgram_t = spectrogram.reassigned(output_frame_size,
+        pitch_transform,
         reassign_time=True, reassign_frequency=False)
-    save_raw_spectrogram_bitmap(image_filename + '_chromagram_t.png', X_chromagram_t)
+    save_raw_spectrogram_bitmap(image_filename + '_pitchgram_t.png', X_pitchgram_t)
 
-    # F-reassigned chromagram
-    X_chromagram_t = spectrogram.reassigned(output_frame_size,
-        chroma_transform,
+    # F-reassigned pitchgram
+    X_pitchgram_t = spectrogram.reassigned(output_frame_size,
+        pitch_transform,
         reassign_time=False, reassign_frequency=True)
-    save_raw_spectrogram_bitmap(image_filename + '_chromagram_f.png', X_chromagram_t)
+    save_raw_spectrogram_bitmap(image_filename + '_pitchgram_f.png', X_pitchgram_t)
 
-    # non-reassigned chromagram
-    X_chromagram = spectrogram.reassigned(output_frame_size,
-        chroma_transform,
+    # non-reassigned pitchgram
+    X_pitchgram = spectrogram.reassigned(output_frame_size,
+        pitch_transform,
         reassign_time=False, reassign_frequency=False)
-    save_raw_spectrogram_bitmap(image_filename + '_chromagram_no.png', X_chromagram)
+    save_raw_spectrogram_bitmap(image_filename + '_pitchgram_no.png', X_pitchgram)
 
-def reassigned_spectrogram(signal_frames, output_frame_size, to_log=True,
+def reassigned_spectrogram(signal_frames, output_frame_size=None, magnitudes='power_db',
     reassign_time=True, reassign_frequency=True):
     """
     From frames of audio signal it computes the frequency reassigned spectrogram
@@ -281,16 +288,16 @@ def reassigned_spectrogram(signal_frames, output_frame_size, to_log=True,
     """
     return Spectrogram(signal_frames).reassigned(
         output_frame_size, LinearTransform(),
-        reassign_time, reassign_frequency, to_log)
+        reassign_time, reassign_frequency, magnitudes=magnitudes)
 
 # [-48,67) -> [~27.5, 21096.2) Hz
-def chromagram(signal_frames, output_frame_size, bin_range=(-48, 67), bin_division=1, to_log=True):
+def pitchgram(signal_frames, output_frame_size=None, bin_range=(-48, 67), bin_division=1, magnitudes='power_db'):
     """
     From frames of audio signal it computes the frequency reassigned spectrogram
-    requantized to pitch bins (chromagram).
+    requantized to pitch bins (pitchgram).
     """
     return Spectrogram(signal_frames).reassigned(
-        output_frame_size, ChromaTransform(bin_range, bin_division), to_log)
+        output_frame_size, PitchTransform(bin_range, bin_division), magnitudes=magnitudes)
 
 if __name__ == '__main__':
     import sys

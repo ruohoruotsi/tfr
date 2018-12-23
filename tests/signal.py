@@ -1,6 +1,8 @@
+from __future__ import print_function, division
+
 import numpy as np
 
-from tfr.analysis import SignalFrames
+from tfr import SignalFrames
 
 def test_split_to_frames():
     signal_frames = SignalFrames(np.arange(23), frame_size=8, hop_size=6,
